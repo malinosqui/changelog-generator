@@ -1,36 +1,212 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# GitHub Changelog Generator
+
+A beautiful web application to generate changelogs from GitHub repositories based on merged pull requests.
+
+## Features
+
+- 🎯 Select any GitHub repository (public or private)
+- 📅 Choose date range for changelog generation
+- 🔐 Support for private repositories with GitHub tokens
+- 🎨 Automatic PR categorization (Features, Bug Fixes, Documentation, etc.)
+- 🤖 **AI-powered custom changelog generation** using Google Gemini 2.0 Flash Lite
+- 📝 Describe your preferred style and let AI format the changelog
+- 💾 Download changelog as Markdown file
+- 📋 Copy to clipboard functionality
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
 
+- Node.js 18+ installed
+- A GitHub account (token optional for public repos)
+
+### Installation
+
+1. Clone the repository:
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone <your-repo-url>
+cd changelog-generator
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. Install dependencies:
+```bash
+npm install
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+3. Create a `.env.local` file for Gemini API key:
+```bash
+cp .env.example .env.local
+# Edit .env.local and add your Gemini API key
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+4. Run the development server:
+```bash
+npm run dev
+```
 
-## Learn More
+5. Open [http://localhost:3000](http://localhost:3000) in your browser
 
-To learn more about Next.js, take a look at the following resources:
+## Usage
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+1. **Enter Repository**: Type the repository in `owner/repo` format (e.g., `facebook/react`)
+2. **Add Token** (optional): If accessing a private repository, add your GitHub Personal Access Token
+3. **Select Dates**: Choose the start and end dates for your changelog
+4. **AI Custom Style** (optional): Describe how you want the AI to format your changelog (e.g., "Use emojis, be enthusiastic, group by impact")
+5. **Generate**: Click "Generate Changelog" and wait for the results
+6. **Download/Copy**: Use the buttons to download as `.md` or copy to clipboard
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## AI-Powered Customization
 
-## Deploy on Vercel
+When you provide a custom style description, the app uses **Google Gemini 2.0 Flash Lite** to generate a personalized changelog that matches your preferences. Examples:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- "Use lots of emojis and be enthusiastic about each change"
+- "Group by impact level (high/medium/low) instead of type"
+- "Write in a casual, friendly tone with jokes"
+- "Focus on user-facing changes only"
+- "Include technical details and architectural decisions"
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Without a custom style, it generates a clean, categorized changelog automatically.
+
+## Gemini API Key
+
+To use AI-powered custom changelog generation:
+
+1. Get an API key from [Google AI Studio](https://aistudio.google.com/apikey)
+2. Add it to your `.env.local` file:
+```bash
+GEMINI_API_KEY=your_api_key_here
+```
+
+**Note**: Without an API key, the app will still work but will use the standard automatic categorization instead of AI customization.
+
+**Why Gemini 2.0 Flash Lite?**
+- ⚡ Faster than GPT-4o-mini
+- 💰 More affordable (free tier available)
+- 🚀 High quality output
+- 🌍 Free API with generous limits
+
+## GitHub Token
+
+To access private repositories or increase rate limits:
+
+1. Go to GitHub Settings → Developer settings → Personal access tokens
+2. Generate a new token with `repo` scope
+3. Paste it in the Token field
+
+**Note**: Your token is never stored and only used for API requests.
+
+## Deployment on Railway
+
+### Quick Deploy
+
+1. Push your code to GitHub
+2. Go to [Railway](https://railway.app)
+3. Click "New Project" → "Deploy from GitHub repo"
+4. Select your repository
+5. Railway will automatically detect Next.js and deploy
+
+### Environment Variables
+
+Add these in Railway dashboard:
+
+- `GEMINI_API_KEY`: **Required** - Your Google Gemini API key for AI-powered changelog generation
+- `NODE_ENV`: Set to `production` (optional)
+
+### Build Settings
+
+Railway automatically detects Next.js with these defaults:
+- **Build Command**: `npm run build`
+- **Start Command**: `npm start`
+- **Port**: 3000 (automatically proxied)
+
+## Tech Stack
+
+- **Frontend**: Next.js 14+ with App Router
+- **Styling**: Tailwind CSS
+- **Language**: TypeScript
+- **GitHub API**: Octokit
+- **Date Handling**: date-fns
+- **Deployment**: Railway
+
+## Project Structure
+
+```
+changelog-generator/
+├── app/
+│   ├── api/
+│   │   ├── github/
+│   │   │   ├── validate/route.ts
+│   │   │   └── pulls/route.ts
+│   │   └── changelog/
+│   │       └── generate/route.ts
+│   ├── layout.tsx
+│   ├── page.tsx
+│   └── globals.css
+├── components/
+│   ├── RepoSelector.tsx
+│   ├── DateRangePicker.tsx
+│   ├── TokenInput.tsx
+│   ├── StyleInput.tsx
+│   └── ChangelogOutput.tsx
+├── lib/
+│   ├── github-client.ts
+│   ├── changelog-generator.ts
+│   └── types.ts
+├── package.json
+├── tsconfig.json
+└── README.md
+```
+
+## API Routes
+
+### `POST /api/github/validate`
+Validates if a repository exists and is accessible.
+
+**Request:**
+```json
+{
+  "owner": "facebook",
+  "repo": "react",
+  "token": "ghp_..." // optional
+}
+```
+
+### `POST /api/github/pulls`
+Fetches merged pull requests within a date range.
+
+**Request:**
+```json
+{
+  "owner": "facebook",
+  "repo": "react",
+  "startDate": "2024-01-01",
+  "endDate": "2024-01-31",
+  "token": "ghp_..." // optional
+}
+```
+
+### `POST /api/changelog/generate`
+Generates a formatted changelog from pull requests.
+
+**Request:**
+```json
+{
+  "pullRequests": [...],
+  "startDate": "2024-01-01",
+  "endDate": "2024-01-31",
+  "repoName": "facebook/react",
+  "customStyle": "..." // optional
+}
+```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+MIT
+
+## Author
+
+Built with ❤️ using Next.js and TypeScript
