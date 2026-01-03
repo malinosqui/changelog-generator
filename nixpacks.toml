@@ -1,0 +1,2 @@
+{"providers":["node"],"phases":{"setup":{"nixPkgs":["nodejs-20_x"]},"install":{"cmds":["npm install"]},"build":{"cmds":["npm run build"]}}}
+

@@ -1,12 +1,6 @@
 [build]
 builder = "NIXPACKS"
 
-[build.nixpacksPlan]
-providers = ["node"]
-
-[build.nixpacksVersion]
-node = "20"
-
 [deploy]
 startCommand = "npm start"
 healthcheckPath = "/"
