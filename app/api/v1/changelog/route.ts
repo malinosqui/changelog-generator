@@ -16,37 +16,22 @@ const STYLE_PROMPTS: Record<string, string> = {
   'casual': 'Write in a casual, friendly tone. Be enthusiastic about changes, use conversational language and emojis. Make it fun to read while still being informative.',
 };
 
-const DISCORD_MAX_CONTENT = 2000;
-
-async function sendToDiscord(webhookUrl: string, changelog: string, repoName: string): Promise<{ success: boolean; error?: string }> {
+async function sendToWebhook(
+  webhookUrl: string,
+  payload: { changelog: string; metadata: Record<string, unknown> }
+): Promise<{ delivered: boolean; statusCode?: number; error?: string }> {
   try {
-    // If within Discord's limit, send as message
-    if (changelog.length <= DISCORD_MAX_CONTENT) {
-      const res = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: changelog }),
-      });
-      if (!res.ok) {
-        return { success: false, error: `Discord returned ${res.status}` };
-      }
-      return { success: true };
-    }
-
-    // If too long, send as file attachment
-    const formData = new FormData();
-    formData.append('payload_json', JSON.stringify({
-      content: `📋 **Changelog** — \`${repoName}\``,
-    }));
-    formData.append('files[0]', new Blob([changelog], { type: 'text/markdown' }), 'changelog.md');
-
-    const res = await fetch(webhookUrl, { method: 'POST', body: formData });
+    const res = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
     if (!res.ok) {
-      return { success: false, error: `Discord returned ${res.status}` };
+      return { delivered: false, statusCode: res.status, error: `Webhook returned ${res.status}` };
     }
-    return { success: true };
+    return { delivered: true, statusCode: res.status };
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : 'Unknown error' };
+    return { delivered: false, error: err instanceof Error ? err.message : 'Unknown error' };
   }
 }
 
@@ -88,7 +73,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { owner, repo, startDate, endDate, token, style, filter, format, discordWebhookUrl } = body;
+    const { owner, repo, startDate, endDate, token, style, filter, format, webhookUrl } = body;
 
     // --- Validation ---
     if (!owner || typeof owner !== 'string') {
@@ -191,14 +176,7 @@ export async function POST(request: NextRequest) {
       changelog = generator.generateMarkdown(pullRequests, since, until, repoName);
     }
 
-    // --- Send to Discord ---
-    let discord: { sent: boolean; error?: string } | undefined;
-    if (discordWebhookUrl) {
-      const result = await sendToDiscord(discordWebhookUrl, changelog, repoName);
-      discord = { sent: result.success, error: result.error };
-    }
-
-    // --- Build response ---
+    // --- Build response payload ---
     const metadata = {
       repository: repoName,
       period: { start: startDate, end: endDate },
@@ -206,8 +184,13 @@ export async function POST(request: NextRequest) {
       filter: releaseFilter,
       style: style || 'default',
       generatedAt: new Date().toISOString(),
-      discord,
-    };
+    } as Record<string, unknown>;
+
+    // --- Send to webhook ---
+    if (webhookUrl) {
+      const result = await sendToWebhook(webhookUrl, { changelog, metadata });
+      metadata.webhook = result;
+    }
 
     if (outputFormat === 'json') {
       const categories = {
