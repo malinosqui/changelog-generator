@@ -1,3 +1,10 @@
+export interface Contributor {
+  login: string;
+  avatar_url: string;
+  html_url: string;
+  role: 'author' | 'reviewer' | 'committer';
+}
+
 export interface PullRequest {
   number: number;
   title: string;
@@ -8,6 +15,7 @@ export interface PullRequest {
   html_url: string;
   issues: Issue[];
   release?: string;
+  contributors: Contributor[];
 }
 
 export interface Issue {

@@ -1,4 +1,4 @@
-import { PullRequest, ChangelogCategory } from './types';
+import { PullRequest, ChangelogCategory, Contributor } from './types';
 import { format } from 'date-fns';
 import { GoogleGenAI } from '@google/genai';
 
@@ -105,7 +105,29 @@ export class ChangelogGenerator {
       markdown += `_No merged pull requests found in this period._\n`;
     }
 
+    // Contributors summary
+    const allContributors = this.collectUniqueContributors(pullRequests);
+    if (allContributors.length > 0) {
+      markdown += `### 👥 Contributors\n\n`;
+      markdown += allContributors
+        .map(c => `- [@${c.login}](${c.html_url})`)
+        .join('\n');
+      markdown += '\n\n';
+    }
+
     return markdown;
+  }
+
+  private collectUniqueContributors(pullRequests: PullRequest[]): Contributor[] {
+    const seen = new Map<string, Contributor>();
+    for (const pr of pullRequests) {
+      for (const contributor of pr.contributors) {
+        if (!seen.has(contributor.login)) {
+          seen.set(contributor.login, contributor);
+        }
+      }
+    }
+    return Array.from(seen.values());
   }
 
   private formatPRs(prs: PullRequest[]): string {
@@ -118,7 +140,7 @@ export class ChangelogGenerator {
     for (const pr of sorted) {
       const releaseTag = pr.release ? ` 📦 *Released in ${pr.release}*` : ' ⏳ *Not yet released*';
       output += `- **[#${pr.number}](${pr.html_url})** ${pr.title} (@${pr.author})${releaseTag}\n`;
-      
+
       if (pr.body && pr.body.trim().length > 0) {
         const bodyPreview = pr.body
           .split('\n')
@@ -126,18 +148,30 @@ export class ChangelogGenerator {
           .slice(0, 3)
           .join(' ')
           .substring(0, 200);
-        
+
         if (bodyPreview.length > 0) {
           output += `  ${bodyPreview}${bodyPreview.length === 200 ? '...' : ''}\n`;
         }
       }
-      
+
       if (pr.issues.length > 0) {
         for (const issue of pr.issues) {
           output += `  - Closes [#${issue.number}](${issue.html_url}): ${issue.title}\n`;
         }
       }
-      
+
+      const otherContributors = pr.contributors.filter(c => c.login !== pr.author);
+      if (otherContributors.length > 0) {
+        const reviewers = otherContributors.filter(c => c.role === 'reviewer');
+        const committers = otherContributors.filter(c => c.role === 'committer');
+        if (reviewers.length > 0) {
+          output += `  - 👀 Reviewed by: ${reviewers.map(c => `[@${c.login}](${c.html_url})`).join(', ')}\n`;
+        }
+        if (committers.length > 0) {
+          output += `  - 👥 Co-authored by: ${committers.map(c => `[@${c.login}](${c.html_url})`).join(', ')}\n`;
+        }
+      }
+
       output += '\n';
     }
 
@@ -166,12 +200,15 @@ export class ChangelogGenerator {
       title: pr.title,
       description: pr.body,
       author: pr.author,
+      contributors: pr.contributors.map(c => ({ login: c.login, role: c.role })),
       merged_at: pr.merged_at,
       labels: pr.labels,
       issues: pr.issues.map(issue => `#${issue.number}: ${issue.title}`),
       url: pr.html_url,
       released_in: pr.release || 'Not yet released',
     }));
+
+    const allContributors = this.collectUniqueContributors(pullRequests);
 
     const defaultStyle = `Write a professional, detailed changelog like you'd see on GitHub releases or in a SaaS product. 
 Be clear and informative. Extract real details from PR descriptions. 
@@ -188,24 +225,28 @@ ${JSON.stringify(prSummaries, null, 2)}
 
 Style: "${stylePreference}"
 
+All contributors in this period: ${JSON.stringify(allContributors.map(c => c.login))}
+
 Create a DETAILED, professional changelog that:
 1. Has a clear title with repo name and date range
 2. Groups changes by category (Features, Bug Fixes, Improvements, etc.)
 3. For EACH change, write a clear description of WHAT was implemented/changed and WHY it matters
 4. Use the PR description/body to extract details - don't just repeat the title
 5. Include PR numbers as links: [#123](url)
-6. Mention authors when relevant
+6. Credit the author and other contributors (reviewers, co-authors) for each change
 7. If there are related issues, reference them
 8. Follow the user's style preference while being informative
 9. Make it read like a real product changelog - users should understand what changed
+10. At the end, add a "Contributors" section listing ALL contributors who participated in this period
 
-IMPORTANT: 
+IMPORTANT:
 - Don't just list PR titles - explain what was actually done
 - Extract key information from the PR descriptions
 - Write clear, user-friendly descriptions
 - If a PR title is vague (like "Fix CI/CD"), use the description to explain what was fixed
 - Include release information: mention which version each change was released in (check the "released_in" field)
 - Mark changes that haven't been released yet
+- Each PR has a "contributors" array with roles (author, reviewer, committer) - use this to credit people appropriately
 
 Return ONLY the markdown changelog, no extra text.`;
 

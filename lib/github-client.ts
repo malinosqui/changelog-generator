@@ -1,5 +1,5 @@
 import { Octokit } from '@octokit/rest';
-import { PullRequest, Issue } from './types';
+import { PullRequest, Issue, Contributor } from './types';
 
 export class GitHubClient {
   private octokit: Octokit;
@@ -102,19 +102,21 @@ export class GitHubClient {
             }
             
             const release = this.findReleaseForPR(pr, releases);
-            
+            const contributors = await this.getContributorsForPR(owner, repo, pr);
+
             pullRequests.push({
               number: pr.number,
               title: pr.title,
               body,
               merged_at: pr.merged_at,
               author: pr.user?.login || 'unknown',
-              labels: pr.labels.map((label) => 
+              labels: pr.labels.map((label) =>
                 typeof label === 'string' ? label : label.name || ''
               ),
               html_url: pr.html_url,
               issues,
               release,
+              contributors,
             });
           } else if (mergedDate < since) {
             hasMore = false;
@@ -172,6 +174,87 @@ export class GitHubClient {
     }
 
     return undefined;
+  }
+
+  private async getContributorsForPR(
+    owner: string,
+    repo: string,
+    pr: any
+  ): Promise<Contributor[]> {
+    const seen = new Map<string, Contributor>();
+
+    // PR author
+    if (pr.user?.login) {
+      seen.set(pr.user.login, {
+        login: pr.user.login,
+        avatar_url: pr.user.avatar_url || '',
+        html_url: pr.user.html_url || `https://github.com/${pr.user.login}`,
+        role: 'author',
+      });
+    }
+
+    // Reviewers
+    try {
+      const { data: reviews } = await this.octokit.pulls.listReviews({
+        owner,
+        repo,
+        pull_number: pr.number,
+      });
+
+      for (const review of reviews) {
+        if (review.user?.login && !seen.has(review.user.login)) {
+          seen.set(review.user.login, {
+            login: review.user.login,
+            avatar_url: review.user.avatar_url || '',
+            html_url: review.user.html_url || `https://github.com/${review.user.login}`,
+            role: 'reviewer',
+          });
+        }
+      }
+    } catch (err) {
+      console.warn(`Could not fetch reviews for PR #${pr.number}`);
+    }
+
+    // Committers (unique commit authors that differ from the PR author)
+    try {
+      const { data: commits } = await this.octokit.pulls.listCommits({
+        owner,
+        repo,
+        pull_number: pr.number,
+        per_page: 100,
+      });
+
+      for (const commit of commits) {
+        if (commit.author?.login && !seen.has(commit.author.login)) {
+          seen.set(commit.author.login, {
+            login: commit.author.login,
+            avatar_url: commit.author.avatar_url || '',
+            html_url: commit.author.html_url || `https://github.com/${commit.author.login}`,
+            role: 'committer',
+          });
+        }
+
+        // Co-authors from commit message
+        const coAuthorMatches = commit.commit.message.matchAll(
+          /Co-authored-by:\s*(.+?)\s*<[^>]+>/gi
+        );
+        for (const match of coAuthorMatches) {
+          const name = match[1].trim();
+          if (!seen.has(name)) {
+            seen.set(name, {
+              login: name,
+              avatar_url: '',
+              html_url: `https://github.com/${name}`,
+              role: 'committer',
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`Could not fetch commits for PR #${pr.number}`);
+    }
+
+    return Array.from(seen.values());
   }
 
   private async getIssuesForPR(
