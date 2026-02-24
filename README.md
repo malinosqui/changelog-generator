@@ -111,7 +111,8 @@ Add these in Railway dashboard:
 
 - `GEMINI_API_KEY`: **Required** - Your Google Gemini API key for AI-powered changelog generation
 - `GITHUB_TOKEN`: **Recommended** - GitHub token used as server fallback to avoid unauthenticated rate limits
-- `NODE_ENV`: Set to `production` (optional)
+
+**Important**: do not set custom `NODE_ENV` values (e.g. `staging`). Let Next.js control this for each command.
 
 ### Build Settings
 

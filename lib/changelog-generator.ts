@@ -3,6 +3,26 @@ import { format } from 'date-fns';
 import { GoogleGenAI } from '@google/genai';
 
 export class ChangelogGenerator {
+  private dedupePullRequests(pullRequests: PullRequest[]): PullRequest[] {
+    const byNumber = new Map<number, PullRequest>();
+
+    for (const pr of pullRequests) {
+      const existing = byNumber.get(pr.number);
+      if (!existing) {
+        byNumber.set(pr.number, pr);
+        continue;
+      }
+
+      const existingMergedAt = new Date(existing.merged_at).getTime();
+      const currentMergedAt = new Date(pr.merged_at).getTime();
+      if (currentMergedAt > existingMergedAt) {
+        byNumber.set(pr.number, pr);
+      }
+    }
+
+    return Array.from(byNumber.values());
+  }
+
   private categorize(pullRequests: PullRequest[]): ChangelogCategory {
     const categories: ChangelogCategory = {
       features: [],
@@ -67,9 +87,10 @@ export class ChangelogGenerator {
     endDate: Date,
     repoName: string
   ): string {
-    const categories = this.categorize(pullRequests);
+    const uniquePullRequests = this.dedupePullRequests(pullRequests);
+    const categories = this.categorize(uniquePullRequests);
     
-    const sortedPrs = pullRequests.sort((a, b) => 
+    const sortedPrs = uniquePullRequests.sort((a, b) => 
       new Date(b.merged_at).getTime() - new Date(a.merged_at).getTime()
     );
 
@@ -106,7 +127,7 @@ export class ChangelogGenerator {
     }
 
     // Contributors summary
-    const allContributors = this.collectUniqueContributors(pullRequests);
+    const allContributors = this.collectUniqueContributors(uniquePullRequests);
     if (allContributors.length > 0) {
       markdown += `### 👥 Contributors\n\n`;
       markdown += allContributors
@@ -186,16 +207,17 @@ export class ChangelogGenerator {
     repoName: string,
     customStyle?: string
   ): Promise<string> {
+    const uniquePullRequests = this.dedupePullRequests(pullRequests);
     const apiKey = process.env.GEMINI_API_KEY;
     
     if (!apiKey) {
       console.warn('GEMINI_API_KEY not found, falling back to basic generation');
-      return this.generateMarkdown(pullRequests, startDate, endDate, repoName);
+      return this.generateMarkdown(uniquePullRequests, startDate, endDate, repoName);
     }
 
     const ai = new GoogleGenAI({ apiKey });
 
-    const prSummaries = pullRequests.map(pr => ({
+    const prSummaries = uniquePullRequests.map(pr => ({
       number: pr.number,
       title: pr.title,
       description: pr.body,
@@ -208,7 +230,7 @@ export class ChangelogGenerator {
       released_in: pr.release || 'Not yet released',
     }));
 
-    const allContributors = this.collectUniqueContributors(pullRequests);
+    const allContributors = this.collectUniqueContributors(uniquePullRequests);
 
     const defaultStyle = `Write a professional, detailed changelog like you'd see on GitHub releases or in a SaaS product. 
 Be clear and informative. Extract real details from PR descriptions. 
@@ -240,6 +262,7 @@ Create a DETAILED, professional changelog that:
 10. At the end, add a "Contributors" section listing ALL contributors who participated in this period
 
 IMPORTANT:
+- Do not repeat the same PR number more than once
 - Don't just list PR titles - explain what was actually done
 - Extract key information from the PR descriptions
 - Write clear, user-friendly descriptions
@@ -282,14 +305,13 @@ Return ONLY the markdown changelog, no extra text.`;
       
       if (!changelog || changelog.trim().length === 0) {
         console.warn('Gemini returned empty response, falling back to basic generation');
-        return this.generateMarkdown(pullRequests, startDate, endDate, repoName);
+        return this.generateMarkdown(uniquePullRequests, startDate, endDate, repoName);
       }
 
       return changelog.trim();
     } catch (error) {
       console.error('Error calling Gemini API:', error);
-      return this.generateMarkdown(pullRequests, startDate, endDate, repoName);
+      return this.generateMarkdown(uniquePullRequests, startDate, endDate, repoName);
     }
   }
 }
-

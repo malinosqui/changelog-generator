@@ -97,6 +97,7 @@ export class GitHubClient {
   }): Promise<PullRequest[]> {
     const { owner, repo, since, until } = options;
     const pullRequests: PullRequest[] = [];
+    const seenPullRequestNumbers = new Set<number>();
 
     try {
       const releases = await this.getReleases(owner, repo, since, until);
@@ -131,6 +132,11 @@ export class GitHubClient {
           const mergedDate = new Date(pr.merged_at);
 
           if (mergedDate >= since && mergedDate <= until) {
+            if (seenPullRequestNumbers.has(pr.number)) {
+              continue;
+            }
+            seenPullRequestNumbers.add(pr.number);
+
             const issues = await this.getIssuesForPR(owner, repo, pr.number, pr.body || '');
 
             let body = pr.body || '';
