@@ -1,20 +1,71 @@
 import { Octokit } from '@octokit/rest';
+import { Endpoints } from '@octokit/types';
 import { PullRequest, Issue, Contributor } from './types';
+
+const MAX_RATE_LIMIT_RETRIES = 3;
+const RETRY_BACKOFF_BASE_MS = 1500;
+const MAX_ISSUES_PER_PR = 5;
+const RATE_LIMIT_RESET_BUFFER_MS = 1000;
+
+type GitHubHeaders = Record<string, string | number | undefined>;
+type GitHubPull = Endpoints['GET /repos/{owner}/{repo}/pulls']['response']['data'][number];
+type GitHubRelease = Endpoints['GET /repos/{owner}/{repo}/releases']['response']['data'][number];
+type GitHubCommit = Endpoints['GET /repos/{owner}/{repo}/pulls/{pull_number}/commits']['response']['data'][number];
+
+interface GitHubErrorShape {
+  status?: number;
+  message?: string;
+  response?: {
+    headers?: GitHubHeaders;
+    data?: { message?: string };
+  };
+}
+
+export class GitHubClientError extends Error {
+  status?: number;
+  retryAfterSeconds?: number;
+  isRateLimit: boolean;
+
+  constructor(
+    message: string,
+    options?: {
+      status?: number;
+      retryAfterSeconds?: number;
+      isRateLimit?: boolean;
+    }
+  ) {
+    super(message);
+    this.name = 'GitHubClientError';
+    this.status = options?.status;
+    this.retryAfterSeconds = options?.retryAfterSeconds;
+    this.isRateLimit = options?.isRateLimit ?? false;
+  }
+}
 
 export class GitHubClient {
   private octokit: Octokit;
+  private readonly hasAuthToken: boolean;
+  private optionalFetchesDisabled = false;
+  private issueCache = new Map<number, Issue | null>();
+  private commitsCache = new Map<number, GitHubCommit[]>();
 
   constructor(token?: string) {
+    const authToken = token?.trim() || process.env.GITHUB_TOKEN?.trim();
+    this.hasAuthToken = Boolean(authToken);
+
     this.octokit = new Octokit({
-      auth: token,
+      auth: authToken || undefined,
     });
   }
 
   async validateRepo(owner: string, repo: string): Promise<boolean> {
     try {
-      await this.octokit.repos.get({ owner, repo });
+      await this.requestWithRetry(
+        () => this.octokit.repos.get({ owner, repo }),
+        `validating repository ${owner}/${repo}`
+      );
       return true;
-    } catch (error) {
+    } catch {
       return false;
     }
   }
@@ -23,8 +74,9 @@ export class GitHubClient {
     try {
       const { data } = await this.octokit.repos.get({ owner, repo });
       return data.private ? 'private' : 'public';
-    } catch (error: any) {
-      if (error.status === 404) {
+    } catch (error) {
+      const githubError = this.asGitHubError(error);
+      if (githubError.status === 404) {
         const octokitWithoutAuth = new Octokit();
         try {
           await octokitWithoutAuth.repos.get({ owner, repo });
@@ -48,21 +100,25 @@ export class GitHubClient {
 
     try {
       const releases = await this.getReleases(owner, repo, since, until);
-      
+
       let page = 1;
       const perPage = 100;
       let hasMore = true;
 
       while (hasMore) {
-        const { data } = await this.octokit.pulls.list({
-          owner,
-          repo,
-          state: 'closed',
-          sort: 'updated',
-          direction: 'desc',
-          per_page: perPage,
-          page,
-        });
+        const { data } = await this.requestWithRetry(
+          () =>
+            this.octokit.pulls.list({
+              owner,
+              repo,
+              state: 'closed',
+              sort: 'updated',
+              direction: 'desc',
+              per_page: perPage,
+              page,
+            }),
+          `fetching pull requests page ${page} for ${owner}/${repo}`
+        );
 
         if (data.length === 0) {
           hasMore = false;
@@ -73,36 +129,35 @@ export class GitHubClient {
           if (!pr.merged_at) continue;
 
           const mergedDate = new Date(pr.merged_at);
-          
+
           if (mergedDate >= since && mergedDate <= until) {
             const issues = await this.getIssuesForPR(owner, repo, pr.number, pr.body || '');
-            
+
             let body = pr.body || '';
-            
+
+            let commitsForPR: GitHubCommit[] | null = null;
             if (!body || body.trim().length === 0) {
-              try {
-                const commits = await this.octokit.pulls.listCommits({
-                  owner,
-                  repo,
-                  pull_number: pr.number,
-                  per_page: 10,
-                });
-                
-                const commitMessages = commits.data
+              commitsForPR = await this.getCommitsForPR(owner, repo, pr.number);
+
+              if (commitsForPR) {
+                const commitMessages = commitsForPR
                   .map(c => c.commit.message)
                   .filter(msg => msg && !msg.startsWith('Merge'))
                   .slice(0, 5);
-                
+
                 if (commitMessages.length > 0) {
                   body = commitMessages.join('\n');
                 }
-              } catch (err) {
-                console.warn(`Could not fetch commits for PR #${pr.number}`);
               }
             }
-            
+
             const release = this.findReleaseForPR(pr, releases);
-            const contributors = await this.getContributorsForPR(owner, repo, pr);
+            const contributors = await this.getContributorsForPR(
+              owner,
+              repo,
+              pr,
+              commitsForPR
+            );
 
             pullRequests.push({
               number: pr.number,
@@ -134,17 +189,28 @@ export class GitHubClient {
       return pullRequests;
     } catch (error) {
       console.error('Error fetching pull requests:', error);
-      throw new Error('Failed to fetch pull requests from GitHub');
+      if (error instanceof GitHubClientError) {
+        throw error;
+      }
+      throw new GitHubClientError('Failed to fetch pull requests from GitHub');
     }
   }
 
   private async getReleases(owner: string, repo: string, since: Date, until: Date) {
     try {
-      const { data } = await this.octokit.repos.listReleases({
-        owner,
-        repo,
-        per_page: 100,
-      });
+      const response = await this.requestOptional(
+        () =>
+          this.octokit.repos.listReleases({
+            owner,
+            repo,
+            per_page: 100,
+          }),
+        `fetching releases for ${owner}/${repo}`
+      );
+
+      if (!response) return [];
+
+      const { data } = response;
 
       return data.filter(release => {
         if (!release.published_at) return false;
@@ -157,11 +223,11 @@ export class GitHubClient {
     }
   }
 
-  private findReleaseForPR(pr: any, releases: any[]): string | undefined {
+  private findReleaseForPR(pr: GitHubPull, releases: GitHubRelease[]): string | undefined {
     if (releases.length === 0) return undefined;
 
     const prMergedDate = new Date(pr.merged_at!);
-    
+
     const sortedReleases = releases
       .filter(r => r.published_at)
       .sort((a, b) => new Date(a.published_at!).getTime() - new Date(b.published_at!).getTime());
@@ -179,7 +245,8 @@ export class GitHubClient {
   private async getContributorsForPR(
     owner: string,
     repo: string,
-    pr: any
+    pr: GitHubPull,
+    commitsForPR: GitHubCommit[] | null
   ): Promise<Contributor[]> {
     const seen = new Map<string, Contributor>();
 
@@ -193,14 +260,23 @@ export class GitHubClient {
       });
     }
 
-    // Reviewers
-    try {
-      const { data: reviews } = await this.octokit.pulls.listReviews({
-        owner,
-        repo,
-        pull_number: pr.number,
-      });
+    if (this.optionalFetchesDisabled) {
+      return Array.from(seen.values());
+    }
 
+    // Reviewers
+    const reviewsResponse = await this.requestOptional(
+      () =>
+        this.octokit.pulls.listReviews({
+          owner,
+          repo,
+          pull_number: pr.number,
+        }),
+      `fetching reviews for PR #${pr.number}`
+    );
+
+    if (reviewsResponse) {
+      const { data: reviews } = reviewsResponse;
       for (const review of reviews) {
         if (review.user?.login && !seen.has(review.user.login)) {
           seen.set(review.user.login, {
@@ -211,19 +287,12 @@ export class GitHubClient {
           });
         }
       }
-    } catch (err) {
-      console.warn(`Could not fetch reviews for PR #${pr.number}`);
     }
 
     // Committers (unique commit authors that differ from the PR author)
-    try {
-      const { data: commits } = await this.octokit.pulls.listCommits({
-        owner,
-        repo,
-        pull_number: pr.number,
-        per_page: 100,
-      });
+    const commits = commitsForPR || (await this.getCommitsForPR(owner, repo, pr.number));
 
+    if (commits) {
       for (const commit of commits) {
         if (commit.author?.login && !seen.has(commit.author.login)) {
           seen.set(commit.author.login, {
@@ -250,8 +319,6 @@ export class GitHubClient {
           }
         }
       }
-    } catch (err) {
-      console.warn(`Could not fetch commits for PR #${pr.number}`);
     }
 
     return Array.from(seen.values());
@@ -263,28 +330,76 @@ export class GitHubClient {
     prNumber: number,
     prBody: string
   ): Promise<Issue[]> {
+    if (this.optionalFetchesDisabled) return [];
+
     const issues: Issue[] = [];
-    const issueReferences = this.extractIssueReferences(prBody);
+    const issueReferences = this.extractIssueReferences(prBody).slice(0, MAX_ISSUES_PER_PR);
 
     for (const issueNumber of issueReferences) {
-      try {
-        const { data } = await this.octokit.issues.get({
-          owner,
-          repo,
-          issue_number: issueNumber,
-        });
-
-        issues.push({
-          number: data.number,
-          title: data.title,
-          html_url: data.html_url,
-        });
-      } catch (error) {
-        console.warn(`Could not fetch issue #${issueNumber}`);
+      if (this.issueCache.has(issueNumber)) {
+        const cachedIssue = this.issueCache.get(issueNumber);
+        if (cachedIssue) {
+          issues.push(cachedIssue);
+        }
+        continue;
       }
+
+      const issueResponse = await this.requestOptional(
+        () =>
+          this.octokit.issues.get({
+            owner,
+            repo,
+            issue_number: issueNumber,
+          }),
+        `fetching issue #${issueNumber} for PR #${prNumber}`
+      );
+
+      if (!issueResponse) {
+        this.issueCache.set(issueNumber, null);
+        continue;
+      }
+
+      const issue: Issue = {
+        number: issueResponse.data.number,
+        title: issueResponse.data.title,
+        html_url: issueResponse.data.html_url,
+      };
+      this.issueCache.set(issueNumber, issue);
+      issues.push(issue);
     }
 
     return issues;
+  }
+
+  private async getCommitsForPR(
+    owner: string,
+    repo: string,
+    prNumber: number
+  ): Promise<GitHubCommit[] | null> {
+    if (this.optionalFetchesDisabled) return null;
+
+    const cachedCommits = this.commitsCache.get(prNumber);
+    if (cachedCommits) {
+      return cachedCommits;
+    }
+
+    const commitsResponse = await this.requestOptional(
+      () =>
+        this.octokit.pulls.listCommits({
+          owner,
+          repo,
+          pull_number: prNumber,
+          per_page: 100,
+        }),
+      `fetching commits for PR #${prNumber}`
+    );
+
+    if (!commitsResponse) {
+      return null;
+    }
+
+    this.commitsCache.set(prNumber, commitsResponse.data);
+    return commitsResponse.data;
   }
 
   private extractIssueReferences(text: string): number[] {
@@ -306,5 +421,157 @@ export class GitHubClient {
 
     return issueNumbers;
   }
-}
 
+  private async requestOptional<T>(
+    operation: () => Promise<T>,
+    context: string
+  ): Promise<T | null> {
+    if (this.optionalFetchesDisabled) return null;
+
+    try {
+      return await this.requestWithRetry(operation, context);
+    } catch (error) {
+      if (error instanceof GitHubClientError && error.isRateLimit) {
+        this.disableOptionalFetches(
+          `[GitHub] Optional PR enrichment disabled after rate-limit responses (${context}). Returning core PR data only.`
+        );
+        return null;
+      }
+
+      console.warn(
+        `[GitHub] Optional request failed while ${context}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      return null;
+    }
+  }
+
+  private async requestWithRetry<T>(
+    operation: () => Promise<T>,
+    context: string
+  ): Promise<T> {
+    let lastError: GitHubErrorShape | undefined;
+
+    for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
+      try {
+        return await operation();
+      } catch (rawError) {
+        const error = this.asGitHubError(rawError);
+        lastError = error;
+
+        if (!this.isRateLimitError(error)) {
+          const message =
+            error.response?.data?.message ||
+            error.message ||
+            `GitHub API error while ${context}`;
+          throw new GitHubClientError(message, {
+            status: error.status,
+            isRateLimit: false,
+          });
+        }
+
+        const retryAfterSeconds = this.parseRetryAfterSeconds(error);
+        if (attempt === MAX_RATE_LIMIT_RETRIES) {
+          throw new GitHubClientError(this.buildRateLimitMessage(error), {
+            status: error.status,
+            retryAfterSeconds,
+            isRateLimit: true,
+          });
+        }
+
+        const fallbackDelayMs = RETRY_BACKOFF_BASE_MS * (attempt + 1);
+        const retryDelayMs =
+          (retryAfterSeconds ? retryAfterSeconds * 1000 : fallbackDelayMs) +
+          Math.floor(Math.random() * 300);
+
+        console.warn(
+          `[GitHub] Rate limit while ${context} (attempt ${attempt + 1}/${
+            MAX_RATE_LIMIT_RETRIES + 1
+          }). Retrying in ${Math.ceil(retryDelayMs / 1000)}s.`
+        );
+
+        await this.sleep(retryDelayMs);
+      }
+    }
+
+    throw new GitHubClientError(
+      lastError?.message || `GitHub API error while ${context}`
+    );
+  }
+
+  private asGitHubError(error: unknown): GitHubErrorShape {
+    if (error && typeof error === 'object') {
+      return error as GitHubErrorShape;
+    }
+    return {};
+  }
+
+  private getHeaderValue(headers: GitHubHeaders | undefined, key: string): string | undefined {
+    if (!headers) return undefined;
+    const value = headers[key] ?? headers[key.toLowerCase()];
+    if (value === undefined) return undefined;
+    return String(value);
+  }
+
+  private parseRetryAfterSeconds(error: GitHubErrorShape): number | undefined {
+    const headers = error.response?.headers;
+    const retryAfterHeader = this.getHeaderValue(headers, 'retry-after');
+    if (retryAfterHeader) {
+      const parsed = Number.parseInt(retryAfterHeader, 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+
+    const resetHeader = this.getHeaderValue(headers, 'x-ratelimit-reset');
+    if (resetHeader) {
+      const resetAtSeconds = Number.parseInt(resetHeader, 10);
+      if (Number.isFinite(resetAtSeconds)) {
+        const waitMs = (resetAtSeconds * 1000) - Date.now() + RATE_LIMIT_RESET_BUFFER_MS;
+        if (waitMs > 0) {
+          return Math.ceil(waitMs / 1000);
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  private isRateLimitError(error: GitHubErrorShape): boolean {
+    const status = error.status;
+    if (status === 429) return true;
+    if (status !== 403) return false;
+
+    const message = (
+      error.response?.data?.message ||
+      error.message ||
+      ''
+    ).toLowerCase();
+
+    return message.includes('rate limit') || message.includes('abuse');
+  }
+
+  private buildRateLimitMessage(error: GitHubErrorShape): string {
+    const baseMessage =
+      error.response?.data?.message ||
+      error.message ||
+      'GitHub API rate limit exceeded.';
+
+    if (this.hasAuthToken) {
+      return baseMessage;
+    }
+
+    return `${baseMessage} Add a GitHub token in the UI or set GITHUB_TOKEN on the server.`;
+  }
+
+  private disableOptionalFetches(reason: string) {
+    if (this.optionalFetchesDisabled) return;
+    this.optionalFetchesDisabled = true;
+    console.warn(reason);
+  }
+
+  private async sleep(ms: number) {
+    await new Promise(resolve => setTimeout(resolve, ms));
+  }
+}

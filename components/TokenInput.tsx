@@ -20,7 +20,7 @@ export default function TokenInput({ value, onChange }: TokenInputProps) {
         <Lock className="h-4 w-4" />
         GitHub Token
         <span className="text-xs text-muted-foreground font-normal">
-          (Optional - Required for private repositories)
+          (Optional - Recommended to avoid API rate limits)
         </span>
       </Label>
       <div className="relative">
@@ -47,9 +47,8 @@ export default function TokenInput({ value, onChange }: TokenInputProps) {
         </Button>
       </div>
       <p className="text-xs text-muted-foreground">
-        🔒 Your token is never stored and only used for API requests.
+        Saved only in your browser and sent only with your GitHub API requests.
       </p>
     </div>
   );
 }
-

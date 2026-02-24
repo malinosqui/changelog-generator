@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { GitHubClient } from '@/lib/github-client';
+import { GitHubClient, GitHubClientError } from '@/lib/github-client';
 
 export async function POST(request: NextRequest) {
   try {
@@ -26,10 +26,24 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ pullRequests });
   } catch (error) {
     console.error('Error fetching pull requests:', error);
+
+    if (error instanceof GitHubClientError) {
+      const retryAfterHeaders = error.retryAfterSeconds
+        ? { 'Retry-After': String(error.retryAfterSeconds) }
+        : undefined;
+
+      return NextResponse.json(
+        { error: error.message },
+        {
+          status: error.isRateLimit ? 429 : (error.status || 502),
+          headers: retryAfterHeaders,
+        }
+      );
+    }
+
     return NextResponse.json(
       { error: 'Failed to fetch pull requests' },
       { status: 500 }
     );
   }
 }
-

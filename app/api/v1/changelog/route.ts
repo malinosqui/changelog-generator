@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { GitHubClient } from '@/lib/github-client';
+import { GitHubClient, GitHubClientError } from '@/lib/github-client';
 import { ChangelogGenerator } from '@/lib/changelog-generator';
 import { PullRequest } from '@/lib/types';
 import { checkRateLimit } from '@/lib/rate-limit';
@@ -151,7 +151,19 @@ export async function POST(request: NextRequest) {
 
     try {
       pullRequests = await client.getPullRequests({ owner, repo, since, until });
-    } catch {
+    } catch (error) {
+      if (error instanceof GitHubClientError) {
+        return NextResponse.json(
+          { error: error.message },
+          {
+            status: error.isRateLimit ? 429 : (error.status || 502),
+            headers: error.retryAfterSeconds
+              ? { 'Retry-After': String(error.retryAfterSeconds) }
+              : undefined,
+          }
+        );
+      }
+
       return NextResponse.json(
         { error: `Failed to fetch pull requests from "${owner}/${repo}". Check that the repository exists and the token (if needed) is valid.` },
         { status: 502 }

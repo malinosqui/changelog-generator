@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -12,6 +12,7 @@ import ReleaseFilter from '@/components/ReleaseFilter';
 import ChangelogOutput from '@/components/ChangelogOutput';
 import { Github, Sparkles, AlertCircle, Save, Trash2 } from 'lucide-react';
 import { useLocalStorage } from '@/lib/useLocalStorage';
+import { PullRequest } from '@/lib/types';
 
 export default function Home() {
   const [repo, setRepo, clearRepo] = useLocalStorage('changelog-repo', '');
@@ -24,7 +25,6 @@ export default function Home() {
   const [changelog, setChangelog] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [repoVisibility, setRepoVisibility] = useState<'public' | 'private' | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const handleClearAll = () => {
@@ -34,7 +34,6 @@ export default function Home() {
     clearEndDate();
     clearCustomStyle();
     clearReleaseFilter();
-    setRepoVisibility(null);
     setChangelog('');
     setError('');
     setShowClearConfirm(false);
@@ -54,17 +53,10 @@ export default function Home() {
       });
 
       const data = await response.json();
-      
-      if (data.valid && data.visibility) {
-        setRepoVisibility(data.visibility === 'private' ? 'private' : 'public');
-      } else {
-        setRepoVisibility(null);
-      }
-      
+
       return { valid: data.valid, visibility: data.visibility };
     } catch (error) {
       console.error('Validation error:', error);
-      setRepoVisibility(null);
       return { valid: false, visibility: 'not-found' };
     }
   };
@@ -104,15 +96,15 @@ export default function Home() {
         throw new Error('Failed to fetch pull requests');
       }
 
-      const { pullRequests } = await pullsResponse.json();
+      const { pullRequests }: { pullRequests: PullRequest[] } = await pullsResponse.json();
       console.log(`Found ${pullRequests.length} PRs`);
 
-      let filteredPRs = pullRequests;
+      let filteredPRs: PullRequest[] = pullRequests;
       if (releaseFilter === 'released') {
-        filteredPRs = pullRequests.filter((pr: any) => pr.release);
+        filteredPRs = pullRequests.filter(pr => Boolean(pr.release));
         console.log(`Filtered to ${filteredPRs.length} released PRs`);
       } else if (releaseFilter === 'unreleased') {
-        filteredPRs = pullRequests.filter((pr: any) => !pr.release);
+        filteredPRs = pullRequests.filter(pr => !pr.release);
         console.log(`Filtered to ${filteredPRs.length} unreleased PRs`);
       }
 
@@ -223,9 +215,7 @@ export default function Home() {
                 onValidate={validateRepo}
               />
 
-              {repoVisibility === 'private' && (
-                <TokenInput value={token} onChange={setToken} />
-              )}
+              <TokenInput value={token} onChange={setToken} />
 
               <DateRangePicker
                 startDate={startDate}

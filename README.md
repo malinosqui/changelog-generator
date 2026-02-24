@@ -18,7 +18,7 @@ A beautiful web application to generate changelogs from GitHub repositories base
 ### Prerequisites
 
 - Node.js 18+ installed
-- A GitHub account (token optional for public repos)
+- A GitHub account
 
 ### Installation
 
@@ -33,10 +33,10 @@ cd changelog-generator
 npm install
 ```
 
-3. Create a `.env.local` file for Gemini API key:
+3. Create a `.env.local` file:
 ```bash
 cp .env.example .env.local
-# Edit .env.local and add your Gemini API key
+# Edit .env.local and add your keys
 ```
 
 4. Run the development server:
@@ -49,7 +49,7 @@ npm run dev
 ## Usage
 
 1. **Enter Repository**: Type the repository in `owner/repo` format (e.g., `facebook/react`)
-2. **Add Token** (optional): If accessing a private repository, add your GitHub Personal Access Token
+2. **Add Token** (recommended): Add your GitHub Personal Access Token to avoid API rate limits (required for private repos)
 3. **Select Dates**: Choose the start and end dates for your changelog
 4. **AI Custom Style** (optional): Describe how you want the AI to format your changelog (e.g., "Use emojis, be enthusiastic, group by impact")
 5. **Generate**: Click "Generate Changelog" and wait for the results
@@ -91,9 +91,9 @@ To access private repositories or increase rate limits:
 
 1. Go to GitHub Settings → Developer settings → Personal access tokens
 2. Generate a new token with `repo` scope
-3. Paste it in the Token field
+3. Paste it in the Token field, or configure `GITHUB_TOKEN` on the server
 
-**Note**: Your token is never stored and only used for API requests.
+**Note**: The app can store the token in browser local storage for convenience. In production, prefer setting `GITHUB_TOKEN` in server environment variables.
 
 ## Deployment on Railway
 
@@ -110,6 +110,7 @@ To access private repositories or increase rate limits:
 Add these in Railway dashboard:
 
 - `GEMINI_API_KEY`: **Required** - Your Google Gemini API key for AI-powered changelog generation
+- `GITHUB_TOKEN`: **Recommended** - GitHub token used as server fallback to avoid unauthenticated rate limits
 - `NODE_ENV`: Set to `production` (optional)
 
 ### Build Settings
