@@ -14,6 +14,42 @@ import { Github, Sparkles, AlertCircle, Save, Trash2 } from 'lucide-react';
 import { useLocalStorage } from '@/lib/useLocalStorage';
 import { PullRequest } from '@/lib/types';
 
+async function getApiErrorMessage(
+  response: Response,
+  fallbackMessage: string
+): Promise<string> {
+  let message = fallbackMessage;
+
+  try {
+    const data: unknown = await response.json();
+    if (data && typeof data === 'object' && 'error' in data) {
+      const apiError = data.error;
+      if (typeof apiError === 'string' && apiError.trim()) {
+        message = apiError.trim();
+      }
+    }
+  } catch {
+    // Keep fallback when response is not valid JSON.
+  }
+
+  if (response.status === 429) {
+    const retryAfter = response.headers.get('Retry-After');
+    const retryHint = retryAfter
+      ? ` Try again in about ${retryAfter} seconds.`
+      : ' Try again in a few minutes.';
+    const tokenHint = message.toLowerCase().includes('token')
+      ? ''
+      : ' Add a GitHub token to increase your rate limit.';
+    return `${message}${retryHint}${tokenHint}`;
+  }
+
+  if ((response.status === 401 || response.status === 403) && !message.toLowerCase().includes('token')) {
+    return `${message} Check whether your GitHub token is valid and has the required scopes.`;
+  }
+
+  return message;
+}
+
 export default function Home() {
   const [repo, setRepo, clearRepo] = useLocalStorage('changelog-repo', '');
   const [token, setToken, clearToken] = useLocalStorage('changelog-token', '');
@@ -93,7 +129,7 @@ export default function Home() {
       });
 
       if (!pullsResponse.ok) {
-        throw new Error('Failed to fetch pull requests');
+        throw new Error(await getApiErrorMessage(pullsResponse, 'Failed to fetch pull requests'));
       }
 
       const { pullRequests }: { pullRequests: PullRequest[] } = await pullsResponse.json();
@@ -124,7 +160,7 @@ export default function Home() {
       });
 
       if (!changelogResponse.ok) {
-        throw new Error('Failed to generate changelog');
+        throw new Error(await getApiErrorMessage(changelogResponse, 'Failed to generate changelog'));
       }
 
       const { changelog: generatedChangelog } = await changelogResponse.json();
